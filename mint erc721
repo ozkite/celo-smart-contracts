@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+
+contract MyCeloNFT is ERC721, Ownable {
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIdCounter;
+
+    // Optional: Base URI for your NFTs (can be updated later)
+    string private _baseTokenURI;
+
+    constructor(string memory name, string memory symbol, string memory baseTokenURI_)
+        ERC721(name, symbol)
+        Ownable(msg.sender) // The deployer will be the owner
+    {
+        _baseTokenURI = baseTokenURI_;
+    }
+
+    // Function to mint a new NFT
+    function mintNFT(address recipient) public onlyOwner returns (uint256) {
+        _tokenIdCounter.increment();
+        uint256 newItemId = _tokenIdCounter.current();
+        _safeMint(recipient, newItemId);
+        return newItemId;
+    }
+
+    // Function to set or update the base URI (only callable by owner)
+    function setBaseURI(string memory baseTokenURI_) public onlyOwner {
+        _baseTokenURI = baseTokenURI_;
+    }
+
+    // Override `_baseURI()` to return the custom base URI
+    function _baseURI() internal view override returns (string memory) {
+        return _baseTokenURI;
+    }
+
+    // Function to get the current base URI
+    function getBaseURI() public view returns (string memory) {
+        return _baseTokenURI;
+    }
+
+    // Optional: If you want to enable a public mint function (e.g., for a sale)
+    // You would add price checks and other logic here.
+    /*
+    function publicMint(address recipient) public payable returns (uint256) {
+        // Example: require msg.value == somePrice;
+        _tokenIdCounter.increment();
+        uint256 newItemId = _tokenIdCounter.current();
+        _safeMint(recipient, newItemId);
+        return newItemId;
+    }
+    */
+}
+
