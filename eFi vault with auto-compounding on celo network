@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract CeloAutoCompoundVault {
+    using SafeMath for uint256;
+    using SafeERC20 for IERC20;
+
+    // === TOKENS ===
+    IERC20 public depositToken;  // e.g., cUSD
+    IERC20 public rewardToken;   // e.g., CELO or another yield token
+
+    // === POOL STATE ===
+    uint256 public totalShares;
+    uint256 public totalDeposits;
+    uint256 public rewardsPerShare;
+
+    // === USER DATA ===
+    mapping(address => uint256) public sharesOf;
+    mapping(address => uint256) public userRewardPerSharePaid;
+    mapping(address => uint256) public rewardsEarned;
+
+    string public name = "Celo Auto-Compound Vault";
+
+    // === EVENTS ===
+    event Deposited(address indexed user, uint256 amount, uint256 shares);
+    event Withdrawn(address indexed user, uint256 amount, uint256 shares);
+    event RewardsClaimed(address indexed user, uint256 amount);
+    event Compounded(address indexed user, uint256 amount);
+
+    // === CONSTRUCTOR ===
+    constructor(address _depositToken, address _rewardToken) {
+        depositToken = IERC20(_depositToken);
+        rewardToken = IERC20(_rewardToken);
+    }
+
+    // === VIEW FUNCTIONS ===
+    function getSharesForDeposit(uint256 amount) public view returns (uint256) {
+        if (totalDeposits == 0) return amount.mul(1e18); // Initial exchange rate 1:1
+        return amount.mul(totalShares).div(totalDeposits);
+    }
+
+    function pendingRewards(address user) public view returns (uint256) {
+        uint256 newRewards = rewardsPerShare.sub(userRewardPerSharePaid[user]);
+        return sharesOf[user].mul(newRewards).div(1e18).add(rewardsEarned[user]);
+    }
+
+    // === DEPOSIT FUNCTION ===
+    function deposit(uint256 amount) external {
+        require(amount > 0, "Cannot deposit 0");
+
+        updatePool();
+
+        // Update user rewards before deposit
+        uint256 userPending = pendingRewards(msg.sender);
+        if (userPending > 0) {
+            rewardsEarned[msg.sender] = rewardsEarned[msg.sender].add(userPending);
+        }
+
+        // Transfer tokens in
+        depositToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        uint256 shares = getSharesForDeposit(amount);
+
+        // Update state
+        sharesOf[msg.sender] = sharesOf[msg.sender].add(shares);
+        totalShares = totalShares.add(shares);
+        totalDeposits = totalDeposits.add(amount);
+
+        emit Deposited(msg.sender, amount, shares);
+    }
+
+    // === CLAIM REWARDS ===
+    function claimRewards() external {
+        updatePool();
+
+        uint256 amount = pendingRewards(msg.sender);
+        require(amount > 0, "No rewards to claim");
+
+        rewardsEarned[msg.sender] = 0;
+        rewardToken.safeTransfer(msg.sender, amount);
+
+        emit RewardsClaimed(msg.sender, amount);
+    }
+
+    // === COMPOUND REWARDS INTO STAKE ===
+    function compoundRewards() external {
+        updatePool();
+
+        uint256 amount = pendingRewards(msg.sender);
+        require(amount > 0, "No rewards to compound");
+
+        rewardsEarned[msg.sender] = 0;
+
+        // Deposit directly into pool as more shares
+        uint256 shares = getSharesForDeposit(amount);
+
+        sharesOf[msg.sender] = sharesOf[msg.sender].add(shares);
+        totalShares = totalShares.add(shares);
+        totalDeposits = totalDeposits.add(amount);
+
+        emit Compounded(msg.sender, amount);
+    }
+
+    // === WITHDRAW ===
+    function withdraw(uint256 amount) external {
+        require(amount > 0, "Cannot withdraw 0");
+        require(sharesOf[msg.sender] > 0, "No shares to withdraw");
+
+        updatePool();
+
+        uint256 shares = amount.mul(totalShares).div(totalDeposits);
+        sharesOf[msg.sender] = sharesOf[msg.sender].sub(shares);
+        totalShares = totalShares.sub(shares);
+        totalDeposits = totalDeposits.sub(amount);
+
+        depositToken.safeTransfer(msg.sender, amount);
+
+        emit Withdrawn(msg.sender, amount, shares);
+    }
+
+    // === UPDATE POOL REWARDS ===
+    function updatePool() internal {
+        uint256 rewardBalance = rewardToken.balanceOf(address(this);
+        if (rewardBalance > 0 && totalDeposits > 0) {
+            rewardsPerShare = rewardsPerShare.add(rewardBalance.mul(1e18).div(totalDeposits));
+        }
+    }
+
+    // === OWNER FUNCTION: TOP UP REWARDS (could be automated via strategy) ===
+    function addRewards(uint256 amount) external {
+        rewardToken.safeTransferFrom(msg.sender, address(this), amount);
+    }
+}
