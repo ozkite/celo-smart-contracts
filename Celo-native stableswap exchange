@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract CeloStableSwap {
+    using SafeMath for uint256;
+    using SafeERC20 for IERC20;
+
+    // Tokens
+    IERC20 public token0; // cUSD
+    IERC20 public token1; // cEUR
+
+    // LP token
+    string public name = "CeloStableSwap LP";
+    string public symbol = "CSWAP-LP";
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+
+    // Balances
+    uint256 public reserve0;
+    uint256 public reserve1;
+
+    // LP shares
+    mapping(address => uint256) public balanceOf;
+
+    // Fee (0.04%)
+    uint256 public constant SWAP_FEE = 4;
+    uint256 public constant FEE_DENOMINATOR = 10000;
+
+    // Events
+    event TokenSwap(address indexed sender, uint256 amount0In, uint256 amount1Out, uint256 fee);
+    event AddLiquidity(address indexed provider, uint256 amount0, uint256 amount1, uint256 liquidity);
+    event RemoveLiquidity(address indexed provider, uint256 amount0, uint256 amount1, uint256 liquidity);
+
+    // === CONSTRUCTOR ===
+    constructor(address _token0, address _token1) {
+        token0 = IERC20(_token0);
+        token1 = IERC20(_token1);
+    }
+
+    // === CORE MATH: STABLESWAP INVARIANT ===
+    function getVirtualPrice() public view returns (uint256) {
+        if (totalSupply == 0) return 0;
+        return (reserve0 + reserve1).mul(1e18).div(totalSupply);
+    }
+
+    function getSwapAmountOut(uint256 amountIn, bool isToken0) public view returns (uint256 amountOut, uint256 fee) {
+        uint256 reserveIn = isToken0 ? reserve0 : reserve1;
+        uint256 reserveOut = isToken0 ? reserve1 : reserve0;
+
+        // Simple stableswap invariant: x * y = k (but we adjust for stablecoins)
+        uint256 inWithFee = amountIn.mul(FEE_DENOMINATOR.sub(SWAP_FEE));
+        uint256 numerator = inWithFee.mul(reserveOut);
+        uint256 denominator = reserveIn.mul(FEE_DENOMINATOR).add(inWithFee);
+
+        amountOut = numerator.div(denominator);
+        fee = amountIn.sub(amountOut);
+    }
+
+    // === SWAP FUNCTION ===
+    function swap(bool isToken0, uint256 amountIn, uint256 minAmountOut) external returns (uint256 amountOut) {
+        require(amountIn > 0 && minAmountOut > 0, "Invalid input");
+
+        IERC20 tokenIn = isToken0 ? token0 : token1;
+        IERC20 tokenOut = isToken0 ? token1 : token0;
+
+        tokenIn.safeTransferFrom(msg.sender, address(this), amountIn);
+
+        (amountOut, uint256 fee) = getSwapAmountOut(amountIn, isToken0);
+        require(amountOut >= minAmountOut, "Slippage too high");
+
+        tokenOut.safeTransfer(msg.sender, amountOut);
+
+        // Update reserves
+        if (isToken0) {
+            reserve0 = reserve0.add(amountIn);
+            reserve1 = reserve1.sub(amountOut);
+        } else {
+            reserve1 = reserve1.add(amountIn);
+            reserve0 = reserve0.sub(amountOut);
+        }
+
+        emit TokenSwap(msg.sender, amountIn, amountOut, fee);
+    }
+
+    // === ADD LIQUIDITY ===
+    function addLiquidity(uint256 amount0, uint256 amount1, uint256 minLiquidity) external {
+        require(amount0 > 0 && amount1 > 0, "Amounts must be > 0");
+
+        token0.safeTransferFrom(msg.sender, address(this), amount0);
+        token1.safeTransferFrom(msg.sender, address(this), amount1);
+
+        uint256 liquidity;
+        if (totalSupply == 0) {
+            liquidity = (amount0 + amount1).mul(1e18);
+        } else {
+            liquidity = totalSupply.mul(amount0 + amount1).div(reserve0 + reserve1);
+        }
+
+        require(liquidity >= minLiquidity, "Liquidity too low");
+
+        balanceOf[msg.sender] = balanceOf[msg.sender].add(liquidity);
+        totalSupply = totalSupply.add(liquidity);
+
+        reserve0 = reserve0.add(amount0);
+        reserve1 = reserve1.add(amount1);
+
+        emit AddLiquidity(msg.sender, amount0, amount1, liquidity);
+    }
+
+    // === REMOVE LIQUIDITY ===
+    function removeLiquidity(uint256 liquidity, uint256 min0, uint256 min1) external {
+        require(liquidity > 0, "Invalid liquidity amount");
+
+        uint256 amount0 = liquidity.mul(reserve0).div(totalSupply);
+        uint256 amount1 = liquidity.mul(reserve1).div(totalSupply);
+
+        require(amount0 >= min0 && amount1 >= min1, "Min amounts not met");
+
+        balanceOf[msg.sender] = balanceOf[msg.sender].sub(liquidity);
+        totalSupply = totalSupply.sub(liquidity);
+
+        token0.safeTransfer(msg.sender, amount0);
+        token1.safeTransfer(msg.sender, amount1);
+
+        reserve0 = reserve0.sub(amount0);
+        reserve1 = reserve1.sub(amount1);
+
+        emit RemoveLiquidity(msg.sender, amount0, amount1, liquidity);
+    }
+}
