@@ -1,0 +1,124 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract LiquidityBootstrappingPool {
+    using SafeMath for uint256;
+    using SafeERC20 for IERC20;
+
+    // === TOKEN ADDRESSES ===
+    IERC20 public token;      // Token being sold
+    IERC20 public baseToken;  // e.g., USDC or CELO
+
+    // === LBP PARAMETERS ===
+    uint256 public startTime;
+    uint256 public endTime;
+    uint256 public initialPrice; // Starting price (token/baseToken)
+    uint256 public finalPrice;   // Minimum price floor
+
+    uint256 public constant PRICE_DECAY_DURATION = 7 days; // Time over which price drops from initial to final
+
+    // === STATE ===
+    uint256 public totalTokenSupply;
+    uint256 public totalBaseTokenLiquidity;
+
+    bool public poolActive = true;
+
+    // Track user contributions
+    mapping(address => uint256) public userTokenPurchased;
+    mapping(address => uint256) public userBaseTokenSpent;
+
+    event TokensPurchased(address indexed buyer, uint256 baseAmount, uint256 tokenAmount);
+    event PoolFinalized(uint256 totalBase, uint256 totalToken);
+
+    // === CONSTRUCTOR ===
+    constructor(
+        address _token,
+        address _baseToken,
+        uint256 _initialPrice,
+        uint256 _finalPrice,
+        uint256 _duration
+    ) {
+        require(_initialPrice > _finalPrice, "Initial price must be higher than final");
+
+        token = IERC20(_token);
+        baseToken = IERC20(_baseToken);
+        initialPrice = _initialPrice;
+        finalPrice = _finalPrice;
+        startTime = block.timestamp;
+        endTime = startTime.add(_duration);
+    }
+
+    // === BUY TOKENS ===
+    function buyTokens() external payable {
+        require(poolActive, "Pool has ended");
+        require(block.timestamp >= startTime && block.timestamp <= endTime, "Pool not active");
+
+        uint256 baseAmount = msg.value > 0 ? msg.value : getBaseTokenBalance(msg.sender);
+        require(baseAmount > 0, "No funds provided");
+
+        uint256 tokenAmount = getTokenAmount(baseAmount);
+
+        // Transfer tokens and base tokens
+        if (msg.value == 0) {
+            baseToken.safeTransferFrom(msg.sender, address(this), baseAmount);
+        }
+
+        token.safeTransfer(msg.sender, tokenAmount);
+
+        // Update state
+        userTokenPurchased[msg.sender] = userTokenPurchased[msg.sender].add(tokenAmount);
+        userBaseTokenSpent[msg.sender] = userBaseTokenSpent[msg.sender].add(baseAmount);
+        totalBaseTokenLiquidity = totalBaseTokenLiquidity.add(baseAmount);
+        totalTokenSupply = totalTokenSupply.add(tokenAmount);
+
+        emit TokensPurchased(msg.sender, baseAmount, tokenAmount);
+
+        // End pool if duration expired
+        if (block.timestamp > endTime) {
+            finalizePool();
+        }
+    }
+
+    // === GET CURRENT TOKEN PRICE ===
+    function getCurrentPrice() public view returns (uint256) {
+        if (block.timestamp <= startTime) return initialPrice;
+        if (block.timestamp >= endTime) return finalPrice;
+
+        uint256 elapsed = block.timestamp.sub(startTime);
+        uint256 decayRatio = elapsed.mul(1e18).div(PRICE_DECAY_DURATION);
+
+        uint256 priceDrop = initialPrice.sub(finalPrice);
+        return initialPrice.sub(priceDrop.mul(decayRatio).div(1e18));
+    }
+
+    // === CALCULATE HOW MANY TOKENS USER GETS FOR BASE TOKEN AMOUNT ===
+    function getTokenAmount(uint256 baseAmount) public view returns (uint256) {
+        uint256 currentPrice = getCurrentPrice();
+        return baseAmount.mul(1e18).div(currentPrice); // assuming 18 decimals
+    }
+
+    // === FINALIZE POOL AND TRANSFER REMAINING TOKENS ===
+    function finalizePool() internal {
+        require(block.timestamp > endTime, "Pool not yet ended");
+        poolActive = false;
+
+        uint256 remainingTokens = token.balanceOf(address(this));
+        token.safeTransfer(owner(), remainingTokens);
+
+        emit PoolFinalized(totalBaseTokenLiquidity, totalTokenSupply);
+    }
+
+    // === UTILITY: Get base token balance if native ETH is sent ===
+    function getBaseTokenBalance(address user) internal view returns (uint256) {
+        return baseToken.balanceOf(user);
+    }
+
+    // === OWNER FUNCTIONS ===
+    address public owner() public view {
+        return payable(address(0)); // Replace with proper owner logic (e.g., Ownable)
+    }
+}
